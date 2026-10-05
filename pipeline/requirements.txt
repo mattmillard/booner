@@ -1,0 +1,9 @@
+numpy
+scipy
+numba
+pillow
+rasterio
+scikit-image
+psycopg[binary]
+pyogrio
+geopandas

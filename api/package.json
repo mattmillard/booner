@@ -1,0 +1,23 @@
+{
+  "name": "api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=../.env --watch src/index.ts",
+    "start": "node --env-file=../.env src/index.ts",
+    "migrate": "node --env-file=../.env scripts/migrate.ts",
+    "ingest": "node --env-file=../.env scripts/ingest.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "astronomy-engine": "^2.1.19",
+    "hono": "^4.13.9",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  }
+}
