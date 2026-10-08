@@ -3,7 +3,7 @@ import { DEM } from './config';
 // Terrain-intelligence layers produced by pipeline/terrain.py: legend, "why" text, seasonal food weights,
 // and point sampling of the raster tiles (each pixel's alpha is the model value × 255).
 
-export const TF: Record<string, { label: string; letter: string; color: string; why: string }> = {
+export const TF: Record<string, { label: string; letter: string; symbol?: 'pinch'; color: string; why: string }> = {
   saddle: { label: 'Saddle', letter: 'S', color: '#e8590c',
     why: 'A low crossing in a ridge. Deer cross here instead of topping out, so it funnels travel: a classic rut stand. Hunt it on a wind that carries your scent down one side, not along the ridge.' },
   hub: { label: 'Thermal hub', letter: 'H', color: '#1971c2',
@@ -12,7 +12,7 @@ export const TF: Record<string, { label: string; letter: string; color: string; 
     why: 'A spur off a ridge. Mature bucks bed near point tips with the wind at their backs, watching downhill, and trails converge at the end.' },
   bench: { label: 'Bench', letter: 'B', color: '#0ca678',
     why: 'A flat shelf on a steep sidehill. Deer travel and bed along benches, out of sight from the ridgetop. Set up on the downwind edge.' },
-  pinch: { label: 'Pinch point', letter: 'F', color: '#c92a2a',
+  pinch: { label: 'Pinch point', letter: '', symbol: 'pinch', color: '#c92a2a',
     why: 'Predicted travel squeezes through narrow cover, a saddle or a bench here. A top ambush spot when the wind carries your scent away from the corridor.' },
   inside_corner: { label: 'Inside corner', letter: 'C', color: '#2f9e44',
     why: 'Timber wraps a field corner. Deer enter fields at corners, and the shape gives you several wind options.' },

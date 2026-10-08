@@ -17,6 +17,35 @@ const known = (v: unknown) => v && typeof v === 'object'
   ? Object.fromEntries(Object.entries(v).filter(([y, n]) => /^(19|20)\d\d$/.test(y) && Number.isInteger(n) && (n as number) >= 0 && (n as number) <= 50))
   : null;
 
+// Whole-group plan area: the union of every parcel in the group, plus any MDC/USFS land that touches it.
+// Used when the crosshair sits on a parcel that belongs to one of his saved groups.
+const GROUP_PLAN_SQL = `
+WITH RECURSIVE
+grp AS (SELECT ST_Union(ST_MakeValid(geom)) AS geom FROM parcels WHERE id = ANY($1::bigint[])),
+conservation AS (SELECT id, name, geom FROM public_lands WHERE source IN ('mdc', 'usfs')),
+connected(id) AS (
+  SELECT c.id FROM conservation c CROSS JOIN grp
+  WHERE c.geom && ST_Expand(grp.geom, 0.00002) AND ST_DWithin(c.geom, grp.geom, 0.00001)
+  UNION
+  SELECT adjacent.id
+  FROM connected linked
+  JOIN conservation current ON current.id = linked.id
+  JOIN conservation adjacent ON adjacent.id <> current.id
+    AND adjacent.geom && ST_Expand(current.geom, 0.00002)
+    AND ST_DWithin(adjacent.geom, current.geom, 0.00001)
+),
+selected AS (
+  SELECT geom FROM parcels WHERE id = ANY($1::bigint[])
+  UNION ALL
+  SELECT c.geom FROM conservation c JOIN connected x ON x.id = c.id
+),
+area AS (SELECT ST_UnaryUnion(ST_Collect(geom)) AS geom FROM selected)
+SELECT (SELECT count(*)::int FROM parcels WHERE id = ANY($1::bigint[])) AS parcel_count,
+  COALESCE((SELECT array_agg(name ORDER BY name) FROM
+    (SELECT DISTINCT c.name FROM conservation c JOIN connected x ON x.id = c.id) names), ARRAY[]::text[]) AS conservation_names,
+  ST_AsGeoJSON(area.geom, 6)::json AS geometry
+FROM area WHERE area.geom IS NOT NULL`;
+
 export const groups = new Hono<Env>()
   .use(requireUser)
   // Parcels for a group: by last name (token before the first comma) in a county, at a point, or by id.
@@ -39,6 +68,102 @@ export const groups = new Hono<Env>()
       return c.json(rows);
     }
     return c.json({ error: 'name+county, lng+lat, or ids required' }, 400);
+  })
+  .get('/plan-area', async (c) => {
+    const lng = Number(c.req.query('lng'));
+    const lat = Number(c.req.query('lat'));
+    if (!Number.isFinite(lng) || !Number.isFinite(lat) || Math.abs(lng) > 180 || Math.abs(lat) > 90)
+      return c.json({ error: 'valid lng and lat required' }, 400);
+    // If the crosshair sits on a parcel that belongs to one of his saved groups, plan the whole group.
+    const hit = await pool.query(
+      `SELECT g.id, g.name, g.county, g.parcel_ids::int[] AS parcel_ids
+       FROM parcel_groups g
+       JOIN parcels p ON p.id = ANY(g.parcel_ids)
+       WHERE g.user_id = $1 AND ST_Intersects(p.geom, ST_SetSRID(ST_Point($2, $3), 4326))
+       ORDER BY ST_Area(p.geom::geography) LIMIT 1`,
+      [c.get('userId'), lng, lat],
+    );
+    if (hit.rows[0]) {
+      const g = hit.rows[0];
+      const { rows } = await pool.query(GROUP_PLAN_SQL, [g.parcel_ids]);
+      if (rows[0]) return c.json({
+        county: g.county, owner: null, parcel_id: null,
+        name: `${g.name} (group · ${rows[0].parcel_count} parcels)`,
+        parcel_count: rows[0].parcel_count, conservation_names: rows[0].conservation_names,
+        geometry: rows[0].geometry, group_id: g.id,
+      });
+    }
+    const { rows } = await pool.query(
+      `WITH RECURSIVE
+       point AS (SELECT ST_SetSRID(ST_Point($1, $2), 4326) AS geom),
+       parcel AS (
+         SELECT id, county, owner, parcel_id, geom FROM parcels
+         WHERE ST_Intersects(geom, (SELECT geom FROM point))
+         ORDER BY ST_Area(geom::geography) LIMIT 1
+       ),
+       owner_key AS (
+         SELECT county,
+           CASE WHEN normalized IN ('USA', 'UNITEDSTATESOFAMERICA') OR normalized LIKE 'MARKTWAINNATIONALFOREST%'
+             THEN 'GOVERNMENT' ELSE normalized END AS surname,
+           CASE WHEN normalized IN ('USA', 'UNITEDSTATESOFAMERICA') OR normalized LIKE 'MARKTWAINNATIONALFOREST%'
+             THEN 'U.S.A.' ELSE upper(btrim(split_part(owner, ',', 1))) END AS owner_label
+         FROM (SELECT county, owner,
+           upper(regexp_replace(btrim(split_part(owner, ',', 1)), '[^A-Za-z0-9]', '', 'g')) AS normalized
+           FROM parcel) normalized_owner
+       ),
+       connected_parcels(id) AS (
+         SELECT id FROM parcel
+         UNION
+         SELECT adjacent.id
+         FROM connected_parcels linked
+         JOIN parcels current ON current.id = linked.id
+         JOIN parcels adjacent ON adjacent.id <> current.id
+           AND adjacent.county = (SELECT county FROM owner_key)
+           AND adjacent.geom && ST_Expand(current.geom, 0.00002)
+           AND NULLIF((SELECT surname FROM owner_key), '') IS NOT NULL
+           AND upper(btrim(split_part(adjacent.owner, ',', 1))) = (SELECT surname FROM owner_key)
+           AND ST_DWithin(adjacent.geom, current.geom, 0.00001)
+       ),
+       parcels_in_plan AS (
+         SELECT p.id, p.geom FROM parcels p JOIN connected_parcels cp ON cp.id = p.id
+       ),
+       conservation AS (SELECT id, name, geom FROM public_lands WHERE source IN ('mdc', 'usfs')),
+       connected(id) AS (
+         SELECT c.id FROM conservation c CROSS JOIN point
+         LEFT JOIN parcels_in_plan p ON true
+         WHERE ST_Intersects(c.geom, point.geom)
+            OR (p.geom IS NOT NULL AND c.geom && ST_Expand(p.geom, 0.00002)
+              AND ST_DWithin(c.geom, p.geom, 0.00001))
+         UNION
+         SELECT adjacent.id
+         FROM connected linked
+         JOIN conservation current ON current.id = linked.id
+         JOIN conservation adjacent ON adjacent.id <> current.id
+           AND adjacent.geom && ST_Expand(current.geom, 0.00002)
+           AND ST_DWithin(adjacent.geom, current.geom, 0.00001)
+       ),
+       selected AS (
+         SELECT geom FROM parcels_in_plan
+         UNION ALL
+         SELECT c.geom FROM conservation c JOIN connected x ON x.id = c.id
+       ),
+       area AS (SELECT ST_UnaryUnion(ST_Collect(geom)) AS geom FROM selected)
+       SELECT p.county, p.owner, p.parcel_id,
+         COALESCE(NULLIF(trim(concat_ws(' · ',
+           CASE WHEN (SELECT count(*) FROM connected_parcels) > 1
+             THEN (SELECT owner_label FROM owner_key) || ' properties (' || (SELECT count(*) FROM connected_parcels) || ' parcels)'
+             ELSE p.owner END,
+           CASE WHEN (SELECT count(*) FROM connected_parcels) > 1 THEN NULL ELSE p.parcel_id END)), ''),
+           (SELECT min(name) FROM conservation c JOIN connected x ON x.id = c.id)) AS name,
+         (SELECT count(*)::int FROM connected_parcels) AS parcel_count,
+         COALESCE((SELECT array_agg(name ORDER BY name) FROM
+           (SELECT DISTINCT c.name FROM conservation c JOIN connected x ON x.id = c.id) names), ARRAY[]::text[]) AS conservation_names,
+         ST_AsGeoJSON(area.geom, 6)::json AS geometry
+       FROM area LEFT JOIN parcel p ON true
+       WHERE area.geom IS NOT NULL`,
+      [lng, lat],
+    );
+    return rows[0] ? c.json(rows[0]) : c.json({ error: 'No parcel or conservation area at the crosshair.' }, 404);
   })
   // Everything inside (or next to) the union of the group's parcels.
   .post('/analyze', async (c) => {

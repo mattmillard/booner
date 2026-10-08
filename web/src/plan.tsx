@@ -1,8 +1,7 @@
-import { useState } from 'react';
-import type { Polygon } from 'geojson';
-import { api, type UserFeature } from './api';
+import { useEffect, useState } from 'react';
+import type { MultiPolygon, Polygon, Position } from 'geojson';
+import { api, type CrosshairPlanArea, type UserFeature } from './api';
 import { compass } from './conditions';
-import { periodAt } from './intel';
 import { planHunt, fmtTime, type Plan, type PlanStand } from './planner';
 import type { Period } from './rating';
 import type { Insight, Observation } from './journal';
@@ -10,12 +9,22 @@ import type { Insight, Observation } from './journal';
 const DAY = 86_400_000;
 const pct = (e: number) => `${e > 0 ? '+' : ''}${Math.round(e * 100)}%`;
 
-function bboxOf(ring: number[][]) {
-  const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+function nextTimeframe(now: Date): { dayOffset: number; period: Period } {
+  if (now.getHours() < 8) return { dayOffset: 0, period: 'am' };
+  if (now.getHours() < 17) return { dayOffset: 0, period: 'pm' };
+  return { dayOffset: 1, period: 'am' };
+}
+
+type PropertyArea = Polygon | MultiPolygon;
+
+function bboxOf(area: PropertyArea) {
+  const polygons = area.type === 'Polygon' ? [area.coordinates] : area.coordinates;
+  const points = polygons.flat(2) as Position[];
+  const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
-export function PlanPanel({ features, observations, insights, viewBounds, viewZoom, center, plan, setPlan, onSaved, onFocus }: {
+export function PlanPanel({ features, observations, insights, viewBounds, viewZoom, center, plan, setPlan, onSaved, onFocus, currentParcel = null, currentGroup = null, preferredProperty }: {
   features: UserFeature[];
   observations: Observation[];
   insights: Insight[];
@@ -26,31 +35,50 @@ export function PlanPanel({ features, observations, insights, viewBounds, viewZo
   setPlan: (p: Plan | null) => void;
   onSaved: (fs: UserFeature[]) => void;
   onFocus: (lngLat: [number, number]) => void;
+  currentParcel?: { name: string; geometry: PropertyArea } | null;
+  currentGroup?: { name: string; geometry: PropertyArea } | null;
+  preferredProperty?: 'currentGroup';
 }) {
   const areas = features.filter((f) => f.properties.kind === 'area');
-  const [areaId, setAreaId] = useState<string>(areas[0]?.id as string ?? 'view');
+  const [areaId, setAreaId] = useState('');
+  const [crosshairLookup, setCrosshairLookup] = useState<{ key: string; area: CrosshairPlanArea | null; loading: boolean }>({ key: '', area: null, loading: false });
+  const crosshairKey = `${center[0]},${center[1]}`;
+  const crosshairArea = crosshairLookup.key === crosshairKey ? crosshairLookup.area : null;
+  const crosshairLoading = crosshairLookup.key !== crosshairKey || crosshairLookup.loading;
+  const selectedProperty = areaId || preferredProperty || (crosshairArea || crosshairLoading ? 'crosshair' : areas[0]?.id as string ?? 'view');
   const today = new Date();
   today.setHours(12, 0, 0, 0);
-  const [dayOffset, setDayOffset] = useState(0);
-  const [period, setPeriod] = useState<Period>(() => {
-    const p = periodAt(Date.now(), center[1], center[0]);
-    return p === 'midday' ? 'pm' : p;
-  });
+  const [timeframe, setTimeframe] = useState(() => nextTimeframe(new Date()));
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    api.planAreaAt(center[0], center[1]).then((area) => {
+      if (live) setCrosshairLookup({ key: crosshairKey, area, loading: false });
+    }).catch(() => {
+      if (live) setCrosshairLookup({ key: crosshairKey, area: null, loading: false });
+    });
+    return () => { live = false; };
+  }, [crosshairKey]);
 
   async function run() {
     setError('');
     setPlan(null);
-    const area = areas.find((a) => a.id === areaId);
-    if (!area && viewZoom < 13.5) return setError('Zoom in to a property (zoom 14+) or pick one of your drawn areas.');
+    if (selectedProperty === 'crosshair' && crosshairLoading) return setError('Finding the property at the crosshair…');
+    if (selectedProperty === 'crosshair' && !crosshairArea) return setError('No parcel at the crosshair. Choose another property or use the current map view.');
+    const area = selectedProperty === 'crosshair' ? crosshairArea
+      : selectedProperty === 'currentParcel' ? currentParcel
+      : selectedProperty === 'currentGroup' ? currentGroup
+      : areas.find((a) => a.id === selectedProperty);
+    const geom = area?.geometry as PropertyArea | undefined;
+    if (!geom && viewZoom < 13.5) return setError('Zoom in to a property (zoom 14+) or pick one of your drawn areas.');
     try {
-      const geom = area?.geometry as Polygon | undefined;
       const result = await planHunt({
         area: geom ?? null,
-        bbox: geom ? bboxOf(geom.coordinates[0]) : viewBounds,
-        day: new Date(today.getTime() + dayOffset * DAY),
-        period,
+        bbox: geom ? bboxOf(geom) : viewBounds,
+        day: new Date(today.getTime() + timeframe.dayOffset * DAY),
+        period: timeframe.period,
         pins: features,
         onProgress: setBusy,
         proven: {
@@ -82,22 +110,29 @@ export function PlanPanel({ features, observations, insights, viewBounds, viewZo
     <div className="plan">
       <h2>Plan my hunt</h2>
       <label>Property
-        <select value={areaId} onChange={(e) => setAreaId(e.target.value)}>
+        <select value={selectedProperty} onChange={(e) => setAreaId(e.target.value)}>
+          {(crosshairArea || crosshairLoading) && (
+            <option value="crosshair">{crosshairArea
+              ? `Property at crosshair · ${crosshairArea.name}${crosshairArea.conservation_names.length ? ` + ${crosshairArea.conservation_names.length} connected conservation areas` : ''}`
+              : 'Property at crosshair · Finding…'}</option>
+          )}
+          {currentParcel && <option value="currentParcel">Current focused parcel · {currentParcel.name}</option>}
+          {currentGroup && <option value="currentGroup">Current focused group · {currentGroup.name}</option>}
           {areas.map((a) => <option key={a.id} value={a.id as string}>{a.properties.name || 'Unnamed area'}</option>)}
           <option value="view">Current map view</option>
         </select>
       </label>
-      {!areas.length && <p className="muted small">Tip: draw your hunting ground with the Area tool so the plan stays on land you can hunt (routes avoid crossing neighbors).</p>}
+      {!areas.length && !crosshairArea && !crosshairLoading && !currentParcel && !currentGroup && <p className="muted small">No parcel at the crosshair. Choose a focused parcel/group, drawn area, or current map view.</p>}
       <div className="row">
         <label className="grow">Day
-          <select value={dayOffset} onChange={(e) => setDayOffset(Number(e.target.value))}>
+          <select value={timeframe.dayOffset} onChange={(e) => setTimeframe((current) => ({ ...current, dayOffset: Number(e.target.value) }))}>
             {Array.from({ length: 7 }, (_, i) => (
               <option key={i} value={i}>{new Date(today.getTime() + i * DAY).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</option>
             ))}
           </select>
         </label>
         <label className="grow">Sit
-          <select value={period} onChange={(e) => setPeriod(e.target.value as Period)}>
+          <select value={timeframe.period} onChange={(e) => setTimeframe((current) => ({ ...current, period: e.target.value as Period }))}>
             <option value="am">Morning</option>
             <option value="midday">Midday (rut)</option>
             <option value="pm">Evening</option>

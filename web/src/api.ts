@@ -1,4 +1,4 @@
-import type { Feature, FeatureCollection, Geometry } from 'geojson';
+import type { Feature, FeatureCollection, Geometry, MultiPolygon, Polygon } from 'geojson';
 
 export type FeatureProps = {
   id: string;
@@ -15,6 +15,16 @@ export type FeatureProps = {
 };
 export type UserFeature = Feature<Geometry, FeatureProps>;
 export type Folder = { id: string; name: string; color: string | null };
+export type CrosshairPlanArea = {
+  name: string;
+  county: string | null;
+  owner: string | null;
+  parcel_id: string | null;
+  parcel_count: number;
+  conservation_names: string[];
+  geometry: Polygon | MultiPolygon;
+  group_id?: string | null;
+};
 
 export class ApiError extends Error {
   status: number;
@@ -37,8 +47,8 @@ export async function call<T>(method: string, path: string, body?: unknown): Pro
 
 export const api = {
   me: () => call<{ email: string }>('GET', '/auth/me'),
-  login: (email: string, password: string) => call<{ email: string }>('POST', '/auth/login', { email, password }),
-  register: (email: string, password: string) => call<{ email: string }>('POST', '/auth/register', { email, password }),
+  login: (username: string, password: string) => call<{ email: string }>('POST', '/auth/login', { username, password }),
+  register: (username: string, email: string, password: string) => call<{ email: string }>('POST', '/auth/register', { username, email, password }),
   logout: () => call('POST', '/auth/logout'),
 
   features: () => call<FeatureCollection<Geometry, FeatureProps>>('GET', '/features'),
@@ -52,6 +62,8 @@ export const api = {
   createFolder: (name: string) => call<Folder>('POST', '/folders', { name }),
 
   at: (lng: number, lat: number) => call<LandInfo>('GET', `/land/at?lng=${lng}&lat=${lat}`),
+  planAreaAt: (lng: number, lat: number) =>
+    call<CrosshairPlanArea>('GET', `/groups/plan-area?lng=${lng}&lat=${lat}`),
 };
 
 export type LandInfo = {

@@ -57,6 +57,8 @@ export const BASEMAPS: Basemap[] = [
   },
 ];
 
+export const DEFAULT_BASEMAP = 'esri';
+
 export const DEM = {
   tiles: cachedImagery('dem'), // Mapterhorn (3DEP), through the API's disk cache
   tileSize: 512,
@@ -73,35 +75,35 @@ export const FONT_BOLD = ['Noto Sans Bold'];
 export type Overlay = { id: string; label: string; date: string; source: string; on: boolean; opacity: number };
 
 export const OVERLAYS: Overlay[] = [
-  { id: 'labels', label: 'Roads & labels', date: 'live', source: 'OpenStreetMap / OpenFreeMap', on: true, opacity: 1 },
-  { id: 'public', label: 'Public land', date: 'ingest', source: 'MDC, USFS, USFWS', on: true, opacity: 0.35 },
-  { id: 'pinches', label: 'Pinches (forced paths)', date: 'ai', source: 'Terrain model: cliffs, banks and water squeezing travel', on: true, opacity: 1 },
-  { id: 'zones', label: 'Hunting zones (public areas)', date: 'ingest', source: 'Traced from MDC area maps', on: true, opacity: 1 },
-  { id: 'water', label: 'Big water (deer walk around)', date: 'ai', source: 'OpenStreetMap lakes of 10+ acres', on: true, opacity: 1 },
-  { id: 'parcels', label: 'Parcels & owners', date: 'ingest', source: 'County assessors: Callaway, Cooper, Cole, Boone', on: true, opacity: 1 },
-  { id: 'plss', label: 'Sections (PLSS)', date: 'ingest', source: 'MSDIS', on: false, opacity: 0.8 },
-  { id: 'counties', label: 'County lines', date: 'ingest', source: 'MSDIS', on: true, opacity: 0.9 },
-  { id: 'ai_features', label: 'AI terrain features', date: 'ai', source: 'Terrain model (3DEP, CDL, OSM)', on: true, opacity: 1 },
-  { id: 'ai_bed_buck', label: 'AI buck bedding (for the wind)', date: 'ai', source: 'Terrain model', on: false, opacity: 0.8 },
-  { id: 'ai_bed_doe', label: 'AI doe bedding', date: 'ai', source: 'Terrain model', on: false, opacity: 0.7 },
-  { id: 'ai_corridor', label: 'AI travel corridors', date: 'ai', source: 'Least-cost paths bed ↔ food/bed', on: false, opacity: 0.8 },
-  { id: 'ai_trails', label: 'AI predicted trails (zoom 12+)', date: 'ai', source: 'Least-cost paths', on: false, opacity: 0.7 },
-  { id: 'ai_landform', label: 'Landforms (benches, draws, cold pools)', date: 'ai', source: '3DEP terrain analysis', on: false, opacity: 0.8 },
-  { id: 'ai_food', label: 'Crop fields (by season)', date: 'ai', source: 'USDA Cropland Data Layer', on: false, opacity: 0.6 },
-  { id: 'hillshade', label: 'LiDAR hillshade', date: '3DEP', source: 'Mapterhorn (USGS 3DEP)', on: false, opacity: 0.5 },
-  { id: 'contours', label: 'Contours (ft)', date: '3DEP', source: 'Mapterhorn (USGS 3DEP)', on: false, opacity: 0.9 },
-  { id: 'slope', label: 'Slope', date: '3DEP', source: 'USGS 3DEP', on: false, opacity: 0.45 },
-  { id: 'scent', label: 'Scent cones (all stands)', date: 'forecast', source: 'Wind + thermal model', on: true, opacity: 0.2 },
-  { id: 'thermals', label: 'Thermal flow (zoom 13+)', date: 'forecast', source: 'Sun + terrain model', on: false, opacity: 0.9 },
-  { id: 'wind', label: 'Wind arrows (time slider)', date: 'forecast', source: 'Open-Meteo', on: false, opacity: 0.9 },
-  { id: 'radar', label: 'Radar (current)', date: 'live', source: 'NOAA NEXRAD via Iowa State Mesonet', on: false, opacity: 0.6 },
+  { id: 'labels', label: 'Roads & labels', date: 'live', source: 'OpenStreetMap / OpenFreeMap', on: true, opacity: 0.1 },
+  { id: 'public', label: 'Public land', date: 'ingest', source: 'MDC, USFS, USFWS', on: true, opacity: 0.1 },
+  { id: 'pinches', label: 'Pinches (forced paths)', date: 'ai', source: 'Terrain model: cliffs, banks and water squeezing travel', on: true, opacity: 0.1 },
+  { id: 'zones', label: 'Hunting zones (public areas)', date: 'ingest', source: 'Traced from MDC area maps', on: true, opacity: 0.1 },
+  { id: 'water', label: 'Big water (deer walk around)', date: 'ai', source: 'OpenStreetMap lakes of 10+ acres', on: true, opacity: 0.1 },
+  { id: 'parcels', label: 'Parcels & owners', date: 'ingest', source: 'County assessors: Callaway, Cooper, Cole, Boone', on: true, opacity: 0.1 },
+  { id: 'plss', label: 'Sections (PLSS)', date: 'ingest', source: 'MSDIS', on: false, opacity: 0.1 },
+  { id: 'counties', label: 'County lines', date: 'ingest', source: 'MSDIS', on: true, opacity: 0.1 },
+  { id: 'ai_features', label: 'Terrain features', date: 'ai', source: 'Terrain model (3DEP, CDL, OSM)', on: true, opacity: 0.1 },
+  { id: 'ai_bed_buck', label: 'Buck bedding (for the wind)', date: 'ai', source: 'Terrain model', on: true, opacity: 0.1 },
+  { id: 'ai_bed_doe', label: 'Doe bedding', date: 'ai', source: 'Terrain model', on: false, opacity: 0.1 },
+  { id: 'ai_corridor', label: 'Travel corridors', date: 'ai', source: 'Least-cost paths bed ↔ food/bed', on: true, opacity: 0.5 },
+  { id: 'ai_trails', label: 'Predicted trails (zoom 12+)', date: 'ai', source: 'Least-cost paths', on: true, opacity: 1 },
+  { id: 'ai_landform', label: 'Landforms (benches, draws, cold pools)', date: 'ai', source: '3DEP terrain analysis', on: false, opacity: 0.1 },
+  { id: 'ai_food', label: 'Crop fields (by season)', date: 'ai', source: 'USDA Cropland Data Layer', on: false, opacity: 0.1 },
+  { id: 'hillshade', label: 'LiDAR hillshade', date: '3DEP', source: 'Mapterhorn (USGS 3DEP)', on: false, opacity: 0.1 },
+  { id: 'contours', label: 'Contours (ft)', date: '3DEP', source: 'Mapterhorn (USGS 3DEP)', on: true, opacity: 0.1 },
+  { id: 'slope', label: 'Slope', date: '3DEP', source: 'USGS 3DEP', on: false, opacity: 0.1 },
+  { id: 'scent', label: 'Scent cones (all stands)', date: 'forecast', source: 'Wind + thermal model', on: true, opacity: 0.1 },
+  { id: 'thermals', label: 'Thermal flow (zoom 13+)', date: 'forecast', source: 'Sun + terrain model', on: false, opacity: 0.1 },
+  { id: 'wind', label: 'Wind arrows (time slider)', date: 'forecast', source: 'Open-Meteo', on: false, opacity: 0.1 },
+  { id: 'radar', label: 'Radar (current)', date: 'live', source: 'NOAA NEXRAD via Iowa State Mesonet', on: false, opacity: 0.1 },
 ];
 
 export const RADAR_TILES = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
 
 export const PUBLIC_COLORS: Record<string, string> = { mdc: '#2f9e44', usfs: '#8ce99a', usfws: '#fab005' };
 
-export const START = { center: [-92.2, 38.85] as [number, number], zoom: 9.5 };
+export const START = { center: [-92.2, 38.85] as [number, number], zoom: 14 };
 
 // Pin icons. Drawn at runtime on canvas (no image assets needed).
 export type IconDef = { label: string; glyph: string; color: string; group: string };

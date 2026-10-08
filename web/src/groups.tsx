@@ -37,11 +37,12 @@ function planArea(g: Polygon | MultiPolygon): Polygon {
   return { type: 'Polygon', coordinates: [rings.flatMap((r) => [...r, rings[0][0]])] };
 }
 
-export function GroupPanel({ group, setGroup, onShow, onPlan }: {
+export function GroupPanel({ group, setGroup, onShow, onPlan, crosshair }: {
   group: Group | null;
   setGroup: (g: Group | null) => void;
   onShow: (g: Group) => void;
   onPlan: (area: Polygon) => void;
+  crosshair: [number, number];
 }) {
   const [saved, setSaved] = useState<Saved[]>([]);
   const [name, setName] = useState('');
@@ -49,6 +50,7 @@ export function GroupPanel({ group, setGroup, onShow, onPlan }: {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [deer, setDeer] = useState<{ inside: DeerEstimate | null; around: DeerEstimate | null } | null>(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const on = group?.parcels.filter((p) => p.on) ?? [];
   const key = on.map((p) => p.id).join(',');
 
@@ -77,6 +79,38 @@ export function GroupPanel({ group, setGroup, onShow, onPlan }: {
     const g = await findGroup(name, county).catch((err) => (setError(err.message), null));
     if (g && !g.parcels.length) setError(`No ${county} County parcels with owner last name ${lastName(name)}.`);
     else if (g) onShow(g);
+  }
+
+  // Start a group from scratch: name it, then "Add" parcels one at a time from the crosshair.
+  function newGroup() {
+    setError('');
+    setNotice('');
+    onShow({ id: null, name: '', county, parcels: [] });
+  }
+
+  // Add (or re-check) the parcel under the crosshair to the current group.
+  async function addCrosshair() {
+    setError('');
+    setNotice('');
+    if (!group) return;
+    try {
+      const hit = await parcelAt(crosshair[0], crosshair[1]);
+      if (!hit) return setError('No parcel at the crosshair. Pan the map and try again.');
+      if (group.parcels.some((p) => p.id === hit.id)) {
+        setGroup({ ...group, parcels: group.parcels.map((p) => (p.id === hit.id ? { ...p, on: true } : p)) });
+        setNotice(`${hit.owner || hit.parcel_id} is already in the group.`);
+        return;
+      }
+      setGroup({
+        ...group,
+        name: group.name.trim() || (hit.owner ? `${lastName(hit.owner)} (${hit.county})` : group.name),
+        county: group.county || hit.county,
+        parcels: [...group.parcels, hit],
+      });
+      setNotice(`Added ${hit.owner || hit.parcel_id} (${hit.acres ?? hit.gis_acres} ac).`);
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }
 
   async function save() {
@@ -150,27 +184,35 @@ export function GroupPanel({ group, setGroup, onShow, onPlan }: {
         </select>
         <button>Find</button>
       </form>
+      <div className="row">
+        <button className="grow" onClick={newGroup}>➕ New group</button>
+      </div>
       {boone && <p className="muted small">Boone County owners are only known for parcels someone has tapped (fetched one at a time), so a Boone group by name will be partial. Tap the others and use "Add to group".</p>}
       {error && <p className="error">{error}</p>}
+      {notice && <p className="muted small">{notice}</p>}
 
       {group && (
         <div className="card">
-          <input value={group.name} onChange={(e) => setGroup({ ...group, name: e.target.value })} aria-label="Group name" />
+          <input value={group.name} onChange={(e) => setGroup({ ...group, name: e.target.value })} aria-label="Group name" placeholder="Group name" />
           <p><strong>{on.length}</strong> of {group.parcels.length} parcels · <strong>{ac(on.reduce((s, p) => s + (p.acres ?? p.gis_acres), 0))}</strong></p>
-          <ul className="grouplist">
-            {group.parcels.map((p) => (
-              <li key={p.id}>
-                <label className="row">
-                  <input type="checkbox" checked={p.on} onChange={() => toggle(p.id)} />
-                  <span className="grow">{p.owner || 'Unknown owner'}<span className="muted small"> · {p.parcel_id}</span></span>
-                  <span>{p.acres ?? p.gis_acres} ac</span>
-                </label>
-              </li>
-            ))}
-          </ul>
-          <p className="muted small">Uncheck parcels that aren't related. To add one, tap it on the map and choose "Add to group".</p>
+          {!group.parcels.length && <p className="muted small">Pan the map so the crosshair sits on a parcel, then press <strong>Add</strong>. Repeat for each parcel in the group.</p>}
+          {group.parcels.length > 0 && (
+            <ul className="grouplist">
+              {group.parcels.map((p) => (
+                <li key={p.id}>
+                  <label className="row">
+                    <input type="checkbox" checked={p.on} onChange={() => toggle(p.id)} />
+                    <span className="grow">{p.owner || 'Unknown owner'}<span className="muted small"> · {p.parcel_id}</span></span>
+                    <span>{p.acres ?? p.gis_acres} ac</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="muted small">Add = the parcel under the crosshair. Uncheck parcels that aren't related, or tap one on the map and choose "Add to group".</p>
           <div className="row wrap">
-            <button className="primary" onClick={save} disabled={!on.length || !group.name.trim()}>{group.id ? 'Save changes' : 'Save group'}</button>
+            <button className="primary" onClick={addCrosshair}>➕ Add crosshair parcel</button>
+            <button onClick={save} disabled={!on.length || !group.name.trim()}>{group.id ? '💾 Save changes' : '💾 Save group'}</button>
             <button onClick={() => analysis && onPlan(planArea(analysis.geometry))} disabled={!analysis}>🎯 Plan this group</button>
             <button className="link" onClick={() => setGroup(null)}>Close group</button>
           </div>

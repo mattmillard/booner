@@ -15,7 +15,9 @@
   background: var(--bg);
 }
 * { box-sizing: border-box; }
-html, body, #root { margin: 0; height: 100%; }
+/* Fixed-screen app: never let the page pan. iOS will otherwise scroll a fixed
+   panel sideways and drag the fixed toolbar/nav out of place with it. */
+html, body, #root { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button {
   background: #25292e; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer;
@@ -59,18 +61,29 @@ a { color: #74c0fc; }
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 12px;
 }
 .toolbar {
-  position: fixed; top: 58px; left: 10px; display: flex; flex-direction: column; gap: 4px;
+  position: fixed; top: 58px; left: 10px; z-index: 5; display: flex; flex-direction: column; gap: 4px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px;
 }
 .toolbar button { display: flex; flex-direction: column; align-items: center; gap: 1px; width: 60px; padding: 5px 2px; font-size: 11px; }
 .toolbar button span { font-size: 18px; line-height: 1.1; }
 .toolbar button.recording { border-color: var(--danger); background: #3b1414; }
+.toolbar-menu {
+  position: fixed; z-index: 12; left: 90px; top: 58px; display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; width: 240px; padding: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 6px 24px #0008;
+}
+.toolbar-menu button {
+  display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 7px;
+  width: auto; min-width: 0; padding: 8px; font-size: 12px; text-align: left; white-space: nowrap;
+}
+.toolbar-menu button span { flex: none; font-size: 16px; }
 .drawbar {
   position: fixed; top: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center;
   background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius); padding: 6px 8px 6px 14px; white-space: nowrap;
 }
 .panel {
-  position: fixed; top: 10px; right: 56px; bottom: 36px; width: 360px; overflow-y: auto;
+  position: fixed; z-index: 10; top: 10px; right: 56px; bottom: 36px; width: 360px;
+  overflow: hidden auto; max-width: calc(100% - 20px); touch-action: pan-y; overscroll-behavior: contain;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px;
 }
 .panel .close { position: sticky; top: 0; float: right; margin: -4px -6px 0 0; z-index: 1; }
@@ -122,12 +135,27 @@ fieldset legend { color: var(--muted); padding: 0 4px; }
 
 @media (max-width: 700px) {
   .topbar .muted { display: none; }
-  .toolbar { top: auto; bottom: 34px; left: 8px; right: 8px; flex-direction: row; overflow-x: auto; }
-  .toolbar button { flex: none; width: 56px; }
-  .panel { top: auto; left: 8px; right: 8px; bottom: 110px; width: auto; max-height: 55vh; }
+  .toolbar {
+    top: auto; bottom: calc(8px + env(safe-area-inset-bottom)); left: 8px; right: 8px;
+    flex-direction: row; gap: 4px; max-width: calc(100vw - 16px); overflow-x: auto; overflow-y: hidden;
+    overscroll-behavior-x: contain; scrollbar-width: none; touch-action: pan-x;
+  }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .toolbar button {
+    display: flex; flex: 0 0 56px; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; width: 56px; height: 46px; padding: 1px 0; font-size: 9px; text-align: center;
+  }
+  .toolbar button > span:first-child {
+    display: grid; place-items: center; flex: 0 0 24px; width: 26px; height: 24px;
+    font-size: 20px; line-height: 1; text-align: center;
+  }
+  .toolbar .toolbar-label { display: block; flex: 0 0 10px; width: 100%; font-size: 0; line-height: 10px; text-align: center; white-space: nowrap; }
+  .toolbar .toolbar-label::after { content: attr(data-short); font-size: 9px; }
+  .toolbar-menu { left: auto; right: 8px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom)); width: min(260px, calc(100vw - 16px)); }
+  .panel { top: auto; left: 8px; right: 8px; bottom: calc(176px + env(safe-area-inset-bottom)); width: auto; max-height: min(55dvh, 480px); }
   .readout { top: 54px; bottom: auto; font-size: 11px; }
   .drawbar { top: 84px; max-width: calc(100% - 16px); }
-  .maplibregl-ctrl-bottom-left { bottom: 104px; }
+  .maplibregl-ctrl-bottom-left { bottom: calc(176px + env(safe-area-inset-bottom)); }
 }
 
 /* Intel panel */
@@ -190,6 +218,8 @@ button.fit { width: 100%; min-width: 26px; padding: 3px 0; font-size: 11px; font
 details.why { border-top: 1px solid var(--line); padding: 5px 0; }
 details.why summary { cursor: pointer; font-size: 13px; }
 .tfbadge { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; margin-right: 6px; }
+.terrain-pinch-icon { display: block; width: 18px; height: 18px; }
+.kinds .terrain-pinch-icon { width: 16px; height: 16px; flex: none; }
 code { background: #25292e; padding: 0 4px; border-radius: 4px; }
 
 /* Planner */
@@ -236,7 +266,7 @@ label.button.primary { background: var(--accent); color: var(--accent-text); bor
 .thumb.tag-doe { border-color: #74c0fc; }
 .thumb.tag-empty { opacity: 0.55; }
 .viewer { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
-.viewer-box { max-width: min(1200px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 8px; background: var(--panel, #1b1e22); padding: 10px; border-radius: 10px; overflow: auto; }
+.viewer-box { max-width: min(1200px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 8px; background: var(--panel, #1b1e22); padding: 10px; border-radius: 10px; overflow: hidden auto; touch-action: pan-y; overscroll-behavior: contain; }
 .viewer-box img { max-width: 100%; max-height: min(72vh, calc(100vh - 230px)); object-fit: contain; }
 
 /* Rotate / tilt control (under the zoom buttons, top right) */
@@ -252,7 +282,7 @@ label.button.primary { background: var(--accent); color: var(--accent-text); bor
 .kinds { margin: 4px 0 8px 22px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
 .kinds i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .kinds .row { gap: 6px; }
-.grouplist { list-style: none; padding: 0; margin: 6px 0; max-height: 40vh; overflow-y: auto; }
+.grouplist { list-style: none; padding: 0; margin: 6px 0; max-height: 40vh; overflow: hidden auto; overscroll-behavior: contain; }
 .grouplist li { border-top: 1px solid var(--line); font-size: 13px; }
 .groups button.link.grow { text-align: left; }
 .groups form input { flex: 2; }

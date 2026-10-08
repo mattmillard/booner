@@ -1,6 +1,6 @@
 // "Plan my hunt" (docs/research/05 §9.3–9.6): candidate stands -> score for the day's wind and period ->
 // scent-aware entry/exit routes -> top 3 with a timeline. Runs in the browser on the z14 model tiles.
-import type { Feature, Point, Polygon, Position } from 'geojson';
+import type { Feature, MultiPolygon, Point, Polygon, Position } from 'geojson';
 import type { UserFeature } from './api';
 import { knowledgeOf, label, type Knowledge } from './knowledge';
 import { sunDay, sunPosition } from './astro';
@@ -146,6 +146,16 @@ function rasterizePolygon(G: Grid, ring: Position[], out: Uint8Array | Float32Ar
       for (let c = Math.max(0, Math.ceil(xs[k] - 0.5)); c < Math.min(G.w, xs[k + 1] - 0.5); c++) out[r * G.w + c] = Math.max(out[r * G.w + c], value);
   }
   return out;
+}
+
+function rasterizeArea(G: Grid, area: Polygon | MultiPolygon) {
+  const polygons: Position[][][] = area.type === 'Polygon' ? [area.coordinates] : area.coordinates;
+  const mask = new Uint8Array(G.w * G.h);
+  for (const rings of polygons) {
+    const ring = rings.length === 1 ? rings[0] : rings.flatMap((r) => [...r, rings[0][0]]);
+    rasterizePolygon(G, ring, mask);
+  }
+  return mask;
 }
 
 // --- Scent ------------------------------------------------------------------------------------
@@ -325,7 +335,7 @@ const pointOf = (f: UserFeature) => (f.geometry as Point).coordinates as [number
 const fmt = (d: Date) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 export async function planHunt(opts: {
-  area: Polygon | null; bbox: number[]; day: Date; period: Period; pins: UserFeature[]; onProgress?: (s: string) => void;
+  area: Polygon | MultiPolygon | null; bbox: number[]; day: Date; period: Period; pins: UserFeature[]; onProgress?: (s: string) => void;
   proven?: { spots: { lng: number; lat: number; radiusM: number; title: string }[]; bucks: { lng: number; lat: number; kind: string }[] };
 }): Promise<Plan> {
   const { area, day, period, pins } = opts;
@@ -354,7 +364,7 @@ export async function planHunt(opts: {
   const [plan, corridor, doe, bed, dem] = await Promise.all([
     loadPlan(G), loadAlpha(G, 'corridor'), loadAlpha(G, 'bed_doe'), loadAlpha(G, `bed_buck_${windBin(wind.from)}`), loadDem(G),
   ]);
-  const inProp = area ? (rasterizePolygon(G, area.coordinates[0]) as Uint8Array) : (() => {
+  const inProp = area ? rasterizeArea(G, area) : (() => {
     const m = new Uint8Array(G.w * G.h);
     const [c0, r0] = toCell(G, opts.bbox[0], opts.bbox[3]), [c1, r1] = toCell(G, opts.bbox[2], opts.bbox[1]);
     for (let r = Math.max(0, r0); r <= Math.min(G.h - 1, r1); r++) for (let c = Math.max(0, c0); c <= Math.min(G.w - 1, c1); c++) m[r * G.w + c] = 1;

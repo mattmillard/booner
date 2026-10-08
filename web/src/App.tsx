@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import type { Map } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { Geometry, Polygon, Position } from 'geojson';
+import type { Geometry, MultiPolygon, Polygon, Position } from 'geojson';
 import { api, type Folder, type LandInfo, type UserFeature } from './api';
-import { BASEMAPS, OVERLAYS, START } from './config';
+import { BASEMAPS, DEFAULT_BASEMAP, OVERLAYS, START } from './config';
 import { AI_CLICKABLE, buildStyle, OVERLAY_LAYERS, registerIcons, setGeoJSON, USER_LAYERS } from './map';
 import { aiTiles, CROP, landformTiles, samplePixel, windBin } from './terrainai';
 import { foodAttraction } from './seasonal';
@@ -31,7 +31,10 @@ type Mode = 'none' | 'pin' | 'line' | 'area' | 'measure';
 type Panel = null | 'layers' | 'list' | 'intel' | 'plan' | 'groups' | 'journal' | 'fieldnotes' | 'cameras' | 'settings' | { feature: string } | { land: [number, number]; info: LandInfo | null; error?: string };
 export type Prefs = {
   basemap: string;
+  basemapDefaultVersion: number;
   overlays: Record<string, { on: boolean; opacity: number }>;
+  overlayDefaultsVersion: number;
+  mapVisibilityVersion: number;
   terrain: { on: boolean; exaggeration: number };
   tfOff: string[]; // terrain-feature kinds he switched off (creek crossings, saddles, ...)
   landformOff: string[]; // landform classes he switched off (Creek, Draw, ...)
@@ -46,17 +49,35 @@ const fitPadding = () => window.innerWidth < 700
 const PREFS_KEY = 'hunt-app:prefs';
 function loadPrefs(): Prefs {
   const defaults: Prefs = {
-    basemap: BASEMAPS[0].id,
+    basemap: DEFAULT_BASEMAP,
+    basemapDefaultVersion: 1,
     overlays: Object.fromEntries(OVERLAYS.map((o) => [o.id, { on: o.on, opacity: o.opacity }])),
+    overlayDefaultsVersion: 3,
+    mapVisibilityVersion: 1,
     terrain: { on: false, exaggeration: 1.5 },
-    tfOff: [],
+    tfOff: ['bed_doe'],
     landformOff: [],
     view: { ...START, bearing: 0, pitch: 0 },
   };
   try {
     const saved = JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}');
-    const basemap = BASEMAPS.some((b) => b.id === saved.basemap) ? saved.basemap : defaults.basemap; // e.g. retired 'usgs'
-    return { ...defaults, ...saved, basemap, overlays: { ...defaults.overlays, ...saved.overlays } };
+    let basemap = BASEMAPS.some((b) => b.id === saved.basemap) ? saved.basemap : defaults.basemap; // e.g. retired 'usgs'
+    if ((saved.basemapDefaultVersion ?? 0) < 1) basemap = DEFAULT_BASEMAP;
+    const overlays: Prefs['overlays'] = { ...defaults.overlays, ...saved.overlays };
+    const tfOff = [...(saved.tfOff ?? defaults.tfOff)];
+    if ((saved.overlayDefaultsVersion ?? 0) < 2) {
+      for (const id of ['ai_bed_buck', 'ai_corridor', 'ai_trails', 'contours']) overlays[id] = { ...overlays[id], on: true };
+    }
+    if ((saved.overlayDefaultsVersion ?? 0) < 3) {
+      for (const overlay of Object.values(overlays)) overlay.opacity = 0.1;
+      overlays.ai_corridor.opacity = 0.5;
+      overlays.ai_trails.opacity = 1;
+    }
+    if ((saved.mapVisibilityVersion ?? 0) < 1) {
+      if (!tfOff.includes('bed_doe')) tfOff.push('bed_doe');
+      overlays.ai_bed_doe = { ...overlays.ai_bed_doe, on: false };
+    }
+    return { ...defaults, ...saved, basemapDefaultVersion: 1, overlayDefaultsVersion: 3, mapVisibilityVersion: 1, basemap, overlays, tfOff };
   } catch {
     return defaults;
   }
@@ -75,12 +96,14 @@ export default function App() {
 function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
   const container = useRef<HTMLDivElement>(null);
   const readout = useRef<HTMLDivElement>(null);
+  const landLookup = useRef(0);
   const [map, setMap] = useState<Map | null>(null);
   const [prefs, setPrefs] = useState(loadPrefs);
   const [features, setFeatures] = useState<UserFeature[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [sourceDates, setSourceDates] = useState<Record<string, string>>({});
   const [panel, setPanel] = useState<Panel>(null);
+  const [otherOpen, setOtherOpen] = useState(false);
   const [camera, setCamera] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>('none');
   const [draft, setDraft] = useState<Position[]>([]);
@@ -91,6 +114,7 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [group, setGroup] = useState<Group | null>(null);
   const [groupArea, setGroupArea] = useState<{ name: string; area: Polygon } | null>(null);
+  const [focusedParcel, setFocusedParcel] = useState<{ name: string; geometry: Polygon | MultiPolygon } | null>(null);
   const [observations, setObservations] = useState<Observation[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [windGrid, setWindGrid] = useState<{ lat: number; lng: number; t: number[]; speed: number[]; dir: number[] }[]>([]);
@@ -123,12 +147,23 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
     m.doubleClickZoom.disable();
 
     if (import.meta.env.DEV) (window as any).__map = m; // debugging handle, dev builds only
+    let userNavigated = false;
+    let active = true;
+    const markUserNavigation = () => { userNavigated = true; };
+    m.on('dragstart', markUserNavigation);
+    m.on('zoomstart', markUserNavigation);
+    m.on('rotatestart', markUserNavigation);
+    m.on('pitchstart', markUserNavigation);
     // style.load, not load: 'load' waits for every first tile (4–7 s MSDIS imagery, DEM), and his layer choices and the
     // base map aren't applied until this runs.
     m.once('style.load', () => {
       registerIcons(m);
       m.fire('move');
       setMap(m);
+      navigator.geolocation?.getCurrentPosition(({ coords }) => {
+        if (!active || userNavigated) return;
+        m.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14 });
+      }, () => {}, { enableHighAccuracy: true, maximumAge: 300_000, timeout: 12_000 });
     });
     m.on('move', () => {
       const c = m.getCenter();
@@ -178,7 +213,10 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
       const overUser = !drawing && m.queryRenderedFeatures(e.point, { layers: [...USER_LAYERS, ...AI_CLICKABLE] }).length > 0;
       m.getCanvas().style.cursor = drawing ? 'crosshair' : overUser ? 'pointer' : '';
     });
-    return () => m.remove();
+    return () => {
+      active = false;
+      m.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -442,12 +480,23 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
   }
 
   async function openLand(p: [number, number]) {
+    const request = ++landLookup.current;
+    setFocusedParcel(null);
     setPanel({ land: p, info: null });
     try {
       const info = await api.at(p[0], p[1]);
+      if (request !== landLookup.current) return;
+      const parcel = info.parcel;
+      if (parcel && (parcel.geometry.type === 'Polygon' || parcel.geometry.type === 'MultiPolygon')) {
+        setFocusedParcel({
+          name: [parcel.owner || 'Unknown owner', parcel.parcel_id].filter(Boolean).join(' · '),
+          geometry: parcel.geometry,
+        });
+      }
       setPanel((cur) => (cur && typeof cur === 'object' && 'land' in cur && cur.land === p ? { land: p, info } : cur));
     } catch (e) {
-      setPanel({ land: p, info: null, error: (e as Error).message });
+      if (request !== landLookup.current) return;
+      setPanel((cur) => (cur && typeof cur === 'object' && 'land' in cur && cur.land === p ? { land: p, info: null, error: (e as Error).message } : cur));
     }
   }
 
@@ -464,6 +513,7 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
     if (!hit) return;
     const has = g.parcels.some((x) => x.id === hit.id);
     setGroup({ ...g, parcels: has ? g.parcels.map((x) => (x.id === hit.id ? { ...x, on: true } : x)) : [...g.parcels, hit] });
+    setGroupArea(null);
     setPanel('groups');
   }
 
@@ -515,11 +565,31 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
     setPanel({ feature: f.id as string });
   };
 
-  const tool = (m: Mode, label: string, icon: string) => (
-    <button className={mode === m ? 'active' : ''} onClick={() => startDraw(m)} title={label}>
-      <span>{icon}</span>{label}
+  const tool = (m: Mode, label: string, icon: string, shortLabel = label) => (
+    <button className={mode === m ? 'active' : ''} onClick={() => { setOtherOpen(false); startDraw(m); }} title={label} aria-label={label}>
+      <span>{icon}</span><span className="toolbar-label" data-short={shortLabel}>{label}</span>
     </button>
   );
+
+  function openOtherPanel(nextPanel: Panel) {
+    setOtherOpen(false);
+    setPanel(nextPanel);
+  }
+
+  function startOtherTool(nextMode: Mode) {
+    setOtherOpen(false);
+    setPanel(null);
+    startDraw(nextMode);
+  }
+
+  const selectedGroupParcels = group?.parcels.filter((p) => p.on) ?? [];
+  const currentGroup = group && selectedGroupParcels.length ? {
+    name: group.name,
+    geometry: groupArea?.area ?? {
+      type: 'MultiPolygon' as const,
+      coordinates: selectedGroupParcels.flatMap((p) => p.geometry.coordinates),
+    },
+  } : null;
 
   return (
     <div className="app">
@@ -535,29 +605,38 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
       </header>
 
       <nav className="toolbar">
-        <button className={panel === 'layers' ? 'active' : ''} onClick={() => setPanel(panel === 'layers' ? null : 'layers')}><span>🗺️</span>Layers</button>
-        <button className={panel === 'list' ? 'active' : ''} onClick={() => setPanel(panel === 'list' ? null : 'list')}><span>📋</span>My map</button>
-        <button className={panel === 'intel' ? 'active' : ''} onClick={() => setPanel(panel === 'intel' ? null : 'intel')}><span>🌤️</span>Intel</button>
-        <button className={panel === 'plan' ? 'active' : ''} onClick={() => setPanel(panel === 'plan' ? null : 'plan')}><span>🎯</span>Plan</button>
-        <button className={panel === 'groups' ? 'active' : ''} onClick={() => setPanel(panel === 'groups' ? null : 'groups')}><span>🧩</span>Groups</button>
-        <button className={panel === 'journal' ? 'active' : ''} onClick={() => setPanel(panel === 'journal' ? null : 'journal')}><span>📓</span>Journal</button>
-        <button className={panel === 'fieldnotes' ? 'active' : ''} onClick={() => setPanel(panel === 'fieldnotes' ? null : 'fieldnotes')}><span>📝</span>Field Notes</button>
-        <button className={panel === 'cameras' ? 'active' : ''} onClick={() => setPanel(panel === 'cameras' ? null : 'cameras')}><span>📷</span>Cameras</button>
-        <button className={panel === 'settings' ? 'active' : ''} onClick={() => setPanel(panel === 'settings' ? null : 'settings')}><span>⚙️</span>Settings</button>
+        <button className={panel === 'layers' ? 'active' : ''} onClick={() => { setOtherOpen(false); setPanel(panel === 'layers' ? null : 'layers'); }} title="Layers" aria-label="Layers"><span>🗺️</span><span className="toolbar-label" data-short="Layers">Layers</span></button>
         {tool('pin', 'Pin', '📍')}
-        {tool('line', 'Line', '〰️')}
-        {tool('area', 'Area', '⬠')}
-        {tool('measure', 'Measure', '📏')}
-        <button className={track ? 'recording' : ''} onClick={toggleTrack}><span>{track ? '⏹️' : '⏺️'}</span>{track ? 'Stop' : 'Track'}</button>
+        <button className={panel === 'intel' ? 'active' : ''} onClick={() => { setOtherOpen(false); setPanel(panel === 'intel' ? null : 'intel'); }} title="Intel" aria-label="Intel"><span>🌤️</span><span className="toolbar-label" data-short="Intel">Intel</span></button>
+        <button className={panel === 'plan' ? 'active' : ''} onClick={() => { setOtherOpen(false); setPanel(panel === 'plan' ? null : 'plan'); }} title="Plan" aria-label="Plan"><span>🎯</span><span className="toolbar-label" data-short="Plan">Plan</span></button>
+        <button className={panel === 'groups' ? 'active' : ''} onClick={() => { setOtherOpen(false); setPanel(panel === 'groups' ? null : 'groups'); }} title="Groups" aria-label="Groups"><span>🧩</span><span className="toolbar-label" data-short="Groups">Groups</span></button>
         <button
           className={prefs.terrain.on ? 'active' : ''}
+          title="3D terrain"
+          aria-label="3D terrain"
           onClick={() => {
+            setOtherOpen(false);
             const on = !prefs.terrain.on;
             setPrefs((p) => ({ ...p, terrain: { ...p.terrain, on } }));
             if (on && map && map.getPitch() < 30) map.easeTo({ pitch: 60, duration: 800 });
           }}
-        ><span>⛰️</span>3D</button>
+        ><span>⛰️</span><span className="toolbar-label" data-short="3D">3D</span></button>
+        <button className={otherOpen ? 'active' : ''} onClick={() => { if (panel) setPanel(null); setOtherOpen((open) => !open); }} title="Other" aria-label="Other" aria-haspopup="menu" aria-expanded={otherOpen}>
+          <span>⋯</span><span className="toolbar-label" data-short="Other">Other</span>
+        </button>
       </nav>
+      {otherOpen && (
+        <div className="toolbar-menu" role="menu" aria-label="Other">
+          <button role="menuitem" onClick={() => openOtherPanel('list')}><span>📋</span>Map</button>
+          <button role="menuitem" onClick={() => openOtherPanel('fieldnotes')}><span>📝</span>Field Notes</button>
+          <button role="menuitem" onClick={() => openOtherPanel('journal')}><span>📓</span>Journal</button>
+          <button role="menuitem" onClick={() => openOtherPanel('cameras')}><span>📷</span>Cameras</button>
+          <button role="menuitem" onClick={() => { setOtherOpen(false); toggleTrack(); }}><span>{track ? '⏹️' : '⏺️'}</span>{track ? 'Stop track' : 'Track'}</button>
+          <button role="menuitem" onClick={() => startOtherTool('measure')}><span>📏</span>Measure</button>
+          <button role="menuitem" onClick={() => startOtherTool('area')}><span>⬠</span>Area</button>
+          <button role="menuitem" onClick={() => openOtherPanel('settings')}><span>⚙️</span>Settings</button>
+        </div>
+      )}
 
       {time !== nowHour() && panel !== 'intel' && (
         <button className="timechip" onClick={() => setTime(nowHour())} title="Back to now">
@@ -583,8 +662,7 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
           <button className="close" onClick={() => setPanel(null)} aria-label="Close">✕</button>
           {panel === 'plan' && map && (
             <PlanPanel
-              // A planned group rides in as the first drawn area, so the planner picks it by default.
-              features={groupArea ? [{ type: 'Feature', id: 'group', geometry: groupArea.area, properties: { id: 'group', kind: 'area', name: `Group: ${groupArea.name}`, props: {} } } as unknown as UserFeature, ...features] : features}
+              features={features}
               observations={observations}
               insights={insights}
               viewBounds={(() => { const b = map.getBounds(); return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]; })()}
@@ -594,14 +672,24 @@ function MapApp({ email, onLogout }: { email: string; onLogout: () => void }) {
               setPlan={setPlan}
               onSaved={(fs) => setFeatures((cur) => [...cur, ...fs])}
               onFocus={(p) => map.flyTo({ center: p, zoom: 16.5 })}
+              currentParcel={focusedParcel}
+              currentGroup={currentGroup}
+              preferredProperty={groupArea ? 'currentGroup' : undefined}
             />
           )}
           {panel === 'groups' && (
             <GroupPanel
               group={group}
-              setGroup={(g) => { setGroup(g); if (!g) setGroupArea(null); }}
+              crosshair={prefs.view.center}
+              setGroup={(g) => {
+                setGroup(g);
+                setGroupArea(null);
+              }}
               onShow={showGroup}
-              onPlan={(area) => { setGroupArea({ name: group!.name, area }); setPanel('plan'); }}
+              onPlan={(area) => {
+                setGroupArea({ name: group!.name, area });
+                setPanel('plan');
+              }}
             />
           )}
           {panel === 'journal' && map && (

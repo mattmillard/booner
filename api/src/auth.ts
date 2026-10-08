@@ -24,7 +24,7 @@ async function verifyPassword(pw: string, stored: string) {
   return timingSafeEqual(actual, expected);
 }
 
-// Reached on this PC (localhost) vs. from the internet through Tailscale Funnel (https://<pc>.<tailnet>.ts.net).
+// Reached on this PC (localhost) vs. from the internet through a public HTTPS tunnel.
 export const isLocal = (c: Context) => /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(c.req.header('host') ?? '');
 
 // Login throttle for the internet side: 8 tries per address per 15 minutes.
@@ -38,7 +38,7 @@ function throttled(c: Context) {
   return e.n > 8;
 }
 
-// Compared against when the email is unknown, so login timing doesn't reveal which emails exist.
+// Compared against when the username is unknown, so login timing doesn't reveal which accounts exist.
 const DUMMY_HASH = await hashPassword(randomBytes(16).toString('hex'));
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -77,34 +77,35 @@ export const requireUser: MiddlewareHandler<Env> = async (c, next) => {
 };
 
 function credentials(body: any) {
+  const username = typeof body?.username === 'string' ? body.username.trim().toLowerCase() : '';
   const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
   const password = typeof body?.password === 'string' ? body.password : '';
-  return { email, password };
+  return { username, email, password };
 }
 
 export const auth = new Hono<Env>()
   .post('/register', async (c) => {
     if (!isLocal(c)) return c.json({ error: 'New accounts can only be created on the home PC.' }, 403);
-    const { email, password } = credentials(await c.req.json());
-    if (!email.includes('@') || password.length < MIN_PASSWORD)
-      return c.json({ error: `Valid email and a password of at least ${MIN_PASSWORD} characters required` }, 400);
+    const { username, email, password } = credentials(await c.req.json());
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username) || !email.includes('@') || password.length < MIN_PASSWORD)
+      return c.json({ error: `Valid username, email, and a password of at least ${MIN_PASSWORD} characters required` }, 400);
     const { rows } = await pool.query(
-      'INSERT INTO users (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING RETURNING id',
-      [email, await hashPassword(password)],
+      'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING id',
+      [username, email, await hashPassword(password)],
     );
-    if (!rows[0]) return c.json({ error: 'Email already registered' }, 409);
+    if (!rows[0]) return c.json({ error: 'Username or email already registered' }, 409);
     await startSession(c, Number(rows[0].id));
     return c.json({ email });
   })
   .post('/login', async (c) => {
     if (throttled(c)) return c.json({ error: 'Too many tries. Wait 15 minutes.' }, 429);
-    const { email, password } = credentials(await c.req.json());
-    const { rows } = await pool.query('SELECT id, password_hash FROM users WHERE email = $1', [email]);
+    const { username, password } = credentials(await c.req.json());
+    const { rows } = await pool.query('SELECT id, email, password_hash FROM users WHERE username = $1', [username]);
     const ok = await verifyPassword(password, rows[0]?.password_hash ?? DUMMY_HASH);
-    if (!rows[0] || !ok) return c.json({ error: 'Wrong email or password' }, 401);
+    if (!rows[0] || !ok) return c.json({ error: 'Wrong username or password' }, 401);
     await pool.query('DELETE FROM sessions WHERE expires_at < now()');
     await startSession(c, Number(rows[0].id));
-    return c.json({ email });
+    return c.json({ email: rows[0].email });
   })
   .post('/logout', async (c) => {
     const token = getCookie(c, COOKIE);

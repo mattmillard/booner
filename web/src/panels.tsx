@@ -17,14 +17,23 @@ const Legend = ({ items }: { items: [string, string][] }) => (
   <div className="legend">{items.map(([label, color]) => <span key={label}><i style={{ background: color }} />{label}</span>)}</div>
 );
 
+function TerrainIcon({ kind, color }: { kind: string; color: string }) {
+  if (kind === 'pinch') return (
+    <svg className="terrain-pinch-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M2 2h16l-8 7L2 2Zm8 9 8 7H2l8-7Z" fill={color} stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+  return <i className="terrain-kind-icon" style={{ background: color }} />;
+}
+
 // One switch per kind inside an overlay (creek crossings, saddles, buck beds...). `off` = kinds he turned off.
-function KindSwitches({ items, off, setOff }: { items: [string, string, string][]; off: string[]; setOff: (off: string[]) => void }) {
+function KindSwitches({ items, off, setOff }: { items: [string, string, string, string?][]; off: string[]; setOff: (off: string[]) => void }) {
   return (
     <div className="kinds">
-      {items.map(([id, label, color]) => (
+      {items.map(([id, label, color, glyph]) => (
         <label key={id} className="row">
           <input type="checkbox" checked={!off.includes(id)} onChange={(e) => setOff(e.target.checked ? off.filter((k) => k !== id) : [...off, id])} />
-          <i style={{ background: color }} />
+          {glyph ? <TerrainIcon kind={glyph} color={color} /> : <i style={{ background: color }} />}
           <span>{label}</span>
         </label>
       ))}
@@ -82,7 +91,9 @@ function TerrainIntel({ at, windBin, time, info }: { at: [number, number]; windB
         return (
           <details key={i} open={i === 0} className="why">
             <summary>
-              <span className="tfbadge" style={{ background: def.color }}>{def.letter}</span>
+              <span className="tfbadge" style={{ background: def.symbol ? 'transparent' : def.color }}>
+                {def.symbol ? <TerrainIcon kind={def.symbol} color={def.color} /> : def.letter}
+              </span>
               {def.label} · {Math.round(t.dist_m / 0.9144)} yd · score {Math.round(t.score * 100)}
             </summary>
             <p className="small">{def.why}</p>
@@ -144,8 +155,11 @@ export function Login({ onDone }: { onDone: (email: string) => void }) {
     setBusy(true);
     setError('');
     try {
-      const fn = register ? api.register : api.login;
-      const u = await fn(String(form.get('email')), String(form.get('password')));
+      const username = String(form.get('username'));
+      const password = String(form.get('password'));
+      const u = register
+        ? await api.register(username, String(form.get('email')), password)
+        : await api.login(username, password);
       onDone(u.email);
     } catch (err) {
       setError((err as Error).message);
@@ -159,7 +173,8 @@ export function Login({ onDone }: { onDone: (email: string) => void }) {
       <form onSubmit={submit}>
         <h1>hunt-app</h1>
         <p className="muted">Missouri hunting maps · Callaway &amp; Cooper</p>
-        <input name="email" type="email" placeholder="Email" autoComplete="email" required />
+        <input name="username" type="text" placeholder="Username" autoComplete="username" required />
+        {register && <input name="email" type="email" placeholder="Email" autoComplete="email" required />}
         <input name="password" type="password" placeholder="Password (10+ characters)" autoComplete={register ? 'new-password' : 'current-password'} minLength={10} required />
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>{register ? 'Create account' : 'Sign in'}</button>
@@ -213,7 +228,7 @@ export function LayersPanel({ prefs, setPrefs, sourceDates, notes }: { prefs: Pr
             )}
             {state.on && o.id === 'ai_food' && <Legend items={Object.values(CROP).map((c) => [c.label, c.color])} />}
             {state.on && o.id === 'ai_features' && (
-              <KindSwitches items={Object.entries(TF).map(([k, t]) => [k, `${t.letter} ${t.label}`, t.color])} off={prefs.tfOff} setOff={(tfOff) => setPrefs((p) => ({ ...p, tfOff }))} />
+              <KindSwitches items={Object.entries(TF).map(([k, t]) => [k, t.symbol ? t.label : `${t.letter} ${t.label}`, t.color, t.symbol ? k : undefined])} off={prefs.tfOff} setOff={(tfOff) => setPrefs((p) => ({ ...p, tfOff }))} />
             )}
             {state.on && o.id === 'ai_trails' && <Legend items={[['Bed ↔ food', '#ffa94d'], ['Bed ↔ bed (rut)', '#f783ac']]} />}
           </div>

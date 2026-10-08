@@ -330,11 +330,51 @@ function drawIcon(id: string, size: number) {
   ctx.lineWidth = size / 16;
   ctx.strokeStyle = '#fff';
   ctx.stroke();
-  ctx.font = `${size * 0.46}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(def.glyph, r, r * 1.06);
+
+  // Emoji glyph boxes vary by platform, and iOS Safari doesn't reliably flush emoji pixels to a
+  // canvas we can read back — so center on the *ink* bounds from measureText, which is
+  // synchronous everywhere. Only fall back to reading pixels if measureText reports no ink.
+  const font = `${size * 0.46}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+  ctx.font = font;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  const m = ctx.measureText(def.glyph);
+  const inkW = m.actualBoundingBoxLeft + m.actualBoundingBoxRight;
+  const inkH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+  let gx: number, gy: number;
+  if (Number.isFinite(inkW) && Number.isFinite(inkH) && inkW > 0 && inkH > 0) {
+    // Place the baseline so the painted box lands dead center: [x0-left, x0+right] and [y0-ascent, y0+descent].
+    gx = r + (m.actualBoundingBoxLeft - m.actualBoundingBoxRight) / 2;
+    gy = r + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+  } else {
+    const { dx, dy } = measureGlyphByPixels(def.glyph, font, size);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    gx = r + dx;
+    gy = r + dy;
+  }
+  ctx.fillText(def.glyph, gx, gy);
   return c;
+}
+
+// Fallback centering: read back the painted pixels (works on Chromium; used only if measureText gives no ink).
+function measureGlyphByPixels(glyph: string, font: string, size: number) {
+  const r = size / 2;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d', { willReadFrequently: true })!;
+  g.font = font;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(glyph, r, r);
+  const px = g.getImageData(0, 0, size, size).data;
+  let minX = size, minY = size, maxX = -1, maxY = -1;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    if (px[(y * size + x) * 4 + 3] <= 8) continue;
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  return { dx: maxX < 0 ? 0 : r - (minX + maxX) / 2, dy: maxY < 0 ? 0 : r - (minY + maxY) / 2 };
 }
 
 const iconUrls: Record<string, string> = {};
@@ -372,10 +412,22 @@ export function registerIcons(map: Map) {
     ctx.strokeStyle = '#fff';
     ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.font = `bold ${size * 0.5}px system-ui, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(def.letter, size / 2, size / 2 + 1);
+    if (def.symbol === 'pinch') {
+      ctx.beginPath();
+      ctx.moveTo(9, 7); ctx.lineTo(31, 7); ctx.lineTo(20, 21);
+      ctx.closePath();
+      ctx.moveTo(20, 19); ctx.lineTo(31, 33); ctx.lineTo(9, 33);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,.8)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.font = `bold ${size * 0.5}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(def.letter, size / 2, size / 2 + 1);
+    }
     map.addImage(`tf-${kind}`, ctx.getImageData(0, 0, size, size), { pixelRatio: 2 });
   }
   // Hourglass for forced-path pinches.
